@@ -1,8 +1,3 @@
-# solver.py
-# Author: Michael
-# Purpose: Solve Sudoku using Backtracking with MRV and Degree Heuristics
-# Note: Forward checking is NOT included here (Person B task).
-
 import time
 from typing import List, Tuple, Optional
 
