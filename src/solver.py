@@ -9,10 +9,12 @@ from typing import List, Tuple, Optional
 Grid = List[List[int]]
 
 class SudokuSolver:
-    def __init__(self, puzzle: Grid):
+    def __init__(self, puzzle: Grid, time_limit_sec: int = 3600):
         assert len(puzzle) == 9 and all(len(row) == 9 for row in puzzle), "Puzzle must be 9x9"
         self.puzzle: Grid = [row[:] for row in puzzle]  # defensive copy
         self.start_time: Optional[float] = None
+        self.time_limit = time_limit_sec
+        self.timed_out = False
         self.trace = []  # records the first 4 assignments for the report
 
     # ---------- Helpers ----------
@@ -75,20 +77,20 @@ class SudokuSolver:
 
         return len(seen)
 
-    # ---------- Heuristic selection (MRV + Degree + L→R then T→B) ----------
+    # ---------- Heuristic selection (MRV + Degree + L→R primary, T→B secondary) ----------
 
     def find_unassigned(self) -> Tuple[Optional[int], Optional[int], List[int], Optional[int], Optional[int]]:
         """
         Pick next cell using MRV then Degree.
         MRV = smallest candidate set size.
         Ties → higher degree first.
-        Final tie → left-to-right then top-to-bottom (by iteration order).
+        Final tie → left-to-right (primary) then top-to-bottom (secondary).
         Returns (row, col, candidates, mrv, degree) or (None, None, [], None, None) if all filled.
         """
-        best = None  # (mrv, -degree, row, col, candidates)
+        best = None  # (mrv, -degree, col, row, candidates)
 
-        for r in range(9):           # top to bottom
-            for c in range(9):       # left to right
+        for r in range(9):           # iterate grid
+            for c in range(9):
                 if self.puzzle[r][c] == 0:
                     cand = self._candidates(r, c)
                     mrv = len(cand)
@@ -96,13 +98,14 @@ class SudokuSolver:
                         # Dead end; report now so caller can fail fast
                         return r, c, [], 0, self._degree(r, c)
                     deg = self._degree(r, c)
-                    key = (mrv, -deg, r, c)
+                    # Tie order: MRV, then -degree, then LEFT→RIGHT (col), then TOP→BOTTOM (row)
+                    key = (mrv, -deg, c, r)
                     if best is None or key < best[:4]:
-                        best = (mrv, -deg, r, c, cand)
+                        best = (mrv, -deg, c, r, cand)
 
         if best is None:
             return None, None, [], None, None
-        mrv, neg_deg, r, c, cand = best
+        mrv, neg_deg, c, r, cand = best
         cand.sort()  # values in increasing order per spec
         return r, c, cand, mrv, -neg_deg
 
@@ -135,7 +138,13 @@ class SudokuSolver:
         """
         Recursive backtracking using MRV + Degree selection.
         Tries candidate values in increasing order.
+        Enforces a 1-hour timeout.
         """
+        # Timeout check
+        if self.start_time is not None and (time.time() - self.start_time) > self.time_limit:
+            self.timed_out = True
+            return False
+
         r, c, cand, mrv, deg = self.find_unassigned()
         if r is None:
             return True  # all assigned
@@ -154,6 +163,10 @@ class SudokuSolver:
                 if self.backtrack():
                     return True
                 self.puzzle[r][c] = 0  # undo
+                # Timeout check during deep recursion
+                if self.start_time is not None and (time.time() - self.start_time) > self.time_limit:
+                    self.timed_out = True
+                    return False
         return False
 
     # ---------- Public API ----------
@@ -193,7 +206,7 @@ if __name__ == "__main__":
     print("Initial:")
     SudokuSolver.pretty_print(solver.puzzle)
     solved, time_taken = solver.solve()
-    print("\nSolved:", solved, f"Time: {time_taken:.3f}s")
+    print("\nSolved:", solved, f"Time: {time_taken:.3f}s", "Timed out" if solver.timed_out else "")
     print("\nFinal:")
     SudokuSolver.pretty_print(solver.puzzle)
 
