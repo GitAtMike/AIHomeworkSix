@@ -1,3 +1,7 @@
+# solver.py
+# Purpose: Solve Sudoku using Backtracking with MRV and Degree Heuristics
+
+import sys
 import time
 from typing import List, Tuple, Optional
 
@@ -184,18 +188,25 @@ class SudokuSolver:
 
 
 if __name__ == "__main__":
-    # Example placeholder puzzle (0 = empty)
-    puzzle = [
-        [0,0,0,2,6,0,7,0,1],
-        [6,8,0,0,7,0,0,9,0],
-        [1,9,0,0,0,4,5,0,0],
-        [8,2,0,1,0,0,0,4,0],
-        [0,0,4,6,0,2,9,0,0],
-        [0,5,0,0,0,3,0,2,8],
-        [0,0,9,3,0,0,0,7,4],
-        [0,4,0,0,5,0,0,3,6],
-        [7,0,3,0,1,8,0,0,0]
-    ]
+    # If a puzzle file is given, load it; otherwise, use built-in sample
+    if len(sys.argv) > 1:
+        path = sys.argv[1]
+        with open(path) as f:
+            rows = [list(map(int, line.split())) for line in f if line.strip()]
+        puzzle = rows
+        print(f"Loaded puzzle from {path}\n")
+    else:
+        puzzle = [
+            [0,0,0,2,6,0,7,0,1],
+            [6,8,0,0,7,0,0,9,0],
+            [1,9,0,0,0,4,5,0,0],
+            [8,2,0,1,0,0,0,4,0],
+            [0,0,4,6,0,2,9,0,0],
+            [0,5,0,0,0,3,0,2,8],
+            [0,0,9,3,0,0,0,7,4],
+            [0,4,0,0,5,0,0,3,6],
+            [7,0,3,0,1,8,0,0,0]
+        ]
 
     solver = SudokuSolver(puzzle)
     print("Initial:")
@@ -208,3 +219,4 @@ if __name__ == "__main__":
     print("\nFirst 4 assignments:")
     for i, t in enumerate(solver.trace, 1):
         print(f"{i}) var=({t['row']},{t['col']}), domain={t['domain_size']}, degree={t['degree']}, value={t['value']}")
+        
