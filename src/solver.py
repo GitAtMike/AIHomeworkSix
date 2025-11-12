@@ -1,177 +1,111 @@
 # solver.py
-# Purpose: Solve Sudoku using Backtracking with MRV and Degree Heuristics
+# Purpose: Solve Sudoku using Backtracking with MRV + Degree + Forward Checking
 
-import sys
-import time
-from typing import List, Tuple, Optional
+import sys, time
+from typing import List, Tuple, Optional, Dict
+from csp import (
+    load_puzzle_file, parse_puzzle_lines, all_vars, row_major_index,
+    is_consistent, degree, domain_size, next_values_in_increasing_order,
+    forward_check, assign, unassign
+)
 
 Grid = List[List[int]]
+Var = Tuple[int, int]
 
 class SudokuSolver:
     def __init__(self, puzzle: Grid, time_limit_sec: int = 3600):
         assert len(puzzle) == 9 and all(len(row) == 9 for row in puzzle), "Puzzle must be 9x9"
-        self.puzzle: Grid = [row[:] for row in puzzle]  # defensive copy
+
+        # Keep a grid for printing just like the original file
+        self.grid: Grid = [row[:] for row in puzzle]
+
+        # Build CSP domains + initial assignments from the grid
+        self.domains: Dict[Var, set[int]] = {}
+        self.assignments: Dict[Var, int] = {}
+        for r in range(9):
+            for c in range(9):
+                v = self.grid[r][c]
+                if v == 0:
+                    self.domains[(r, c)] = set(range(1, 10))
+                else:
+                    self.domains[(r, c)] = {v}
+                    self.assignments[(r, c)] = v
+
+        # Pre-propagate the givens once with forward checking
+        for v, val in list(self.assignments.items()):
+            st = forward_check(self.assignments, v, val, self.domains)
+            if st is None:
+                raise ValueError("Puzzle has an immediate contradiction.")
+
         self.start_time: Optional[float] = None
         self.time_limit = time_limit_sec
         self.timed_out = False
         self.trace = []  # records the first 4 assignments for the report
 
-    # ---------- Helpers ----------
+    # ---------- Variable selection (MRV -> Degree -> L→R then T→B) ----------
 
-    def _candidates(self, row: int, col: int) -> List[int]:
-        """Return sorted list of legal values {1..9} for cell (row,col)."""
-        if self.puzzle[row][col] != 0:
-            return []
-
-        used = set()
-
-        # Row
-        for c in range(9):
-            v = self.puzzle[row][c]
-            if v:
-                used.add(v)
-
-        # Column
-        for r in range(9):
-            v = self.puzzle[r][col]
-            if v:
-                used.add(v)
-
-        # 3x3 box
-        br, bc = (row // 3) * 3, (col // 3) * 3
-        for r in range(br, br + 3):
-            for c in range(bc, bc + 3):
-                v = self.puzzle[r][c]
-                if v:
-                    used.add(v)
-
-        return [v for v in range(1, 10) if v not in used]
-
-    def _degree(self, row: int, col: int) -> int:
-        """
-        Degree heuristic: number of *unassigned* neighbors in same row/col/box.
-        Higher degree preferred to break MRV ties.
-        """
-        if self.puzzle[row][col] != 0:
-            return -1
-
-        seen = set()
-
-        # Row neighbors
-        for c in range(9):
-            if c != col and self.puzzle[row][c] == 0:
-                seen.add((row, c))
-
-        # Column neighbors
-        for r in range(9):
-            if r != row and self.puzzle[r][col] == 0:
-                seen.add((r, col))
-
-        # Box neighbors
-        br, bc = (row // 3) * 3, (col // 3) * 3
-        for r in range(br, br + 3):
-            for c in range(bc, bc + 3):
-                if (r != row or c != col) and self.puzzle[r][c] == 0:
-                    seen.add((r, c))
-
-        return len(seen)
-
-    # ---------- Heuristic selection (MRV + Degree + L→R primary, T→B secondary) ----------
-
-    def find_unassigned(self) -> Tuple[Optional[int], Optional[int], List[int], Optional[int], Optional[int]]:
-        """
-        Pick next cell using MRV then Degree.
-        MRV = smallest candidate set size.
-        Ties → higher degree first.
-        Final tie → left-to-right (primary) then top-to-bottom (secondary).
-        Returns (row, col, candidates, mrv, degree) or (None, None, [], None, None) if all filled.
-        """
-        best = None  # (mrv, -degree, col, row, candidates)
-
-        for r in range(9):           # iterate grid
-            for c in range(9):
-                if self.puzzle[r][c] == 0:
-                    cand = self._candidates(r, c)
-                    mrv = len(cand)
-                    if mrv == 0:
-                        # Dead end; report now so caller can fail fast
-                        return r, c, [], 0, self._degree(r, c)
-                    deg = self._degree(r, c)
-                    # Tie order: MRV, then -degree, then LEFT→RIGHT (col), then TOP→BOTTOM (row)
-                    key = (mrv, -deg, c, r)
-                    if best is None or key < best[:4]:
-                        best = (mrv, -deg, c, r, cand)
-
-        if best is None:
-            return None, None, [], None, None
-        mrv, neg_deg, c, r, cand = best
-        cand.sort()  # values in increasing order per spec
-        return r, c, cand, mrv, -neg_deg
-
-    # ---------- Constraints ----------
-
-    def is_valid(self, row: int, col: int, val: int) -> bool:
-        """True if val can be placed at (row,col) per Sudoku rules."""
-        # Row
-        for c in range(9):
-            if self.puzzle[row][c] == val:
-                return False
-
-        # Column
-        for r in range(9):
-            if self.puzzle[r][col] == val:
-                return False
-
-        # Box
-        br, bc = (row // 3) * 3, (col // 3) * 3
-        for r in range(br, br + 3):
-            for c in range(bc, bc + 3):
-                if self.puzzle[r][c] == val:
-                    return False
-
-        return True
+    def select_var(self) -> Var:
+        unassigned = [v for v in self.domains if v not in self.assignments]
+        # MRV
+        m = min(domain_size(v, self.domains) for v in unassigned)
+        cand = [v for v in unassigned if domain_size(v, self.domains) == m]
+        # Degree
+        d = max(degree(v, self.assignments) for v in cand)
+        cand = [v for v in cand if degree(v, self.assignments) == d]
+        # Left-to-right primary, top-to-bottom secondary
+        cand.sort(key=row_major_index)
+        return cand[0]
 
     # ---------- Search ----------
 
     def backtrack(self) -> bool:
-        """
-        Recursive backtracking using MRV + Degree selection.
-        Tries candidate values in increasing order.
-        Enforces a 1-hour timeout.
-        """
-        # Timeout check
         if self.start_time is not None and (time.time() - self.start_time) > self.time_limit:
             self.timed_out = True
             return False
 
-        r, c, cand, mrv, deg = self.find_unassigned()
-        if r is None:
-            return True  # all assigned
+        if len(self.assignments) == 81:
+            return True
 
-        for v in cand:
-            if self.is_valid(r, c, v):
+        var = self.select_var()
+        r, c = var
+        # Capture logging numbers at pick time
+        mrv_at_pick = domain_size(var, self.domains)
+        deg_at_pick = degree(var, self.assignments)
+
+        for v in next_values_in_increasing_order(var, self.domains):
+            if is_consistent(self.assignments, var, v):
                 # Log only the first four decisions
                 if len(self.trace) < 4:
                     self.trace.append({
                         "row": r, "col": c,
-                        "domain_size": mrv,
-                        "degree": deg,
+                        "domain_size": mrv_at_pick,
+                        "degree": deg_at_pick,
                         "value": v
                     })
-                self.puzzle[r][c] = v
-                if self.backtrack():
-                    return True
-                self.puzzle[r][c] = 0  # undo
-                # Timeout check during deep recursion
+
+                # Assign and propagate
+                assign(var, v, self.assignments)
+                self.grid[r][c] = v
+                state = forward_check(self.assignments, var, v, self.domains)
+                if state is not None:
+                    if self.backtrack():
+                        return True
+                    # undo propagation
+                    state.restore(self.domains)
+
+                # undo assignment
+                unassign(var, self.assignments)
+                self.grid[r][c] = 0
+
                 if self.start_time is not None and (time.time() - self.start_time) > self.time_limit:
                     self.timed_out = True
                     return False
+
         return False
 
     # ---------- Public API ----------
 
     def solve(self) -> Tuple[bool, float]:
-        """Start timer, call backtrack, return (solved, elapsed_seconds)."""
         self.start_time = time.time()
         solved = self.backtrack()
         elapsed = time.time() - self.start_time
@@ -210,13 +144,14 @@ if __name__ == "__main__":
 
     solver = SudokuSolver(puzzle)
     print("Initial:")
-    SudokuSolver.pretty_print(solver.puzzle)
+    SudokuSolver.pretty_print(solver.grid)
     solved, time_taken = solver.solve()
     print("\nSolved:", solved, f"Time: {time_taken:.3f}s", "Timed out" if solver.timed_out else "")
     print("\nFinal:")
-    SudokuSolver.pretty_print(solver.puzzle)
+    SudokuSolver.pretty_print(solver.grid)
 
     print("\nFirst 4 assignments:")
     for i, t in enumerate(solver.trace, 1):
         print(f"{i}) var=({t['row']},{t['col']}), domain={t['domain_size']}, degree={t['degree']}, value={t['value']}")
+
         
